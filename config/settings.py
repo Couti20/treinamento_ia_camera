@@ -18,30 +18,32 @@ MODELS_DIR.mkdir(exist_ok=True)
 VIDEO_SOURCE = 0
 
 # Confiança mínima para detecções
-CONF_THRESHOLD = 0.4
+CONF_THRESHOLD = 0.3  # Reduzido para 0.3 (mais sensível)
 
-# Definir EPIs obrigatórios por setor/cargo (mapeamento)
-# Exemplo: {"obra": ["helmet", "gloves", "vest"], "escritório": ["glasses"]}
+# Definir EPIs obrigatórios por setor/cargo (usando classes COCO)
+# NOTA: Modelo COCO atual NÃO detecta EPIs específicos (helmet, gloves, etc)
+# Para fase de TESTES: apenas detectar pessoas. Preparado para EPIs customizados depois.
 REQUIRED_PPE_BY_SECTOR = {
-    "default": ["helmet", "hardhat", "gloves", "glove", "vest", "goggles", "glasses"],
-    "construção": ["helmet", "hardhat", "gloves", "glove", "vest"],
-    "química": ["helmet", "gloves", "goggles", "vest"],
-    "limpeza": ["gloves", "glasses"],
+    "default": ["person"],  # Apenas detectar pessoas por enquanto
+    "construção": ["person"],  # TODO: Retreinar com dataset de EPIs
+    "química": ["person"],
+    "limpeza": ["person"],
 }
 
 # PPE padrão (usado se nenhum setor for especificado)
-DEFAULT_REQUIRED_PPE = REQUIRED_PPE_BY_SECTOR["default"]
+# COCO classes disponíveis para detecção: backpack, handbag, tie, suitcase, etc
+# Se vazio, apenas detecta pessoas
+DEFAULT_REQUIRED_PPE = []  # Vazio por enquanto - apenas detecta pessoas
 
-# Mapeamento de classes do modelo para tipos de EPI (customize conforme seu modelo)
+# Mapeamento de classes do modelo COCO para tipos de EPI
+# Usando modelo COCO padrão: adaptar classes existentes para EPIs
 EPI_CLASS_MAPPING = {
-    "helmet": "capacete",
-    "hardhat": "capacete",
-    "gloves": "luvas",
-    "glove": "luvas",
-    "goggles": "óculos",
-    "glasses": "óculos",
-    "vest": "colete/avental",
-    "safety_vest": "colete/avental",
+    "person": "pessoa",
+    "backpack": "mochila/equipamento",
+    "handbag": "bolsa",
+    "tie": "uniforme",
+    "baseball_glove": "luvas",
+    # TODO: Adicione mapeamentos de EPIs customizados quando modelo for retreinado
 }
 
 # Limiar de overlap para associação EPI↔pessoa (0.0-1.0)

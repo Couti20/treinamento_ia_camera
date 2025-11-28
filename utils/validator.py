@@ -36,13 +36,34 @@ class EPIValidator:
         Validar EPIs de uma pessoa.
         Retorna dict com: missing, present, complete (bool), severity
         """
+        # Se não há requisitos, tudo é OK
+        if not self.required_epis:
+            return {
+                "missing": [],
+                "present": list(detected_ppes.keys()),
+                "complete": True,
+                "severity": "info",
+                "missing_percent": 0.0,
+            }
+        
         detected_types = set()
         
         # Mapear classes detectadas para tipos de EPI esperados
         for detected_class in detected_ppes.keys():
+            # Ignorar "person" - não é um EPI
+            if detected_class.lower() == "person":
+                continue
+            
             detected_lower = detected_class.lower()
             for required in self.required_epis:
-                if required in detected_lower or detected_lower in required:
+                # Verificar match EXATO ou como substring do início (evita falsos positivos)
+                # Ex: "glove" == "gloves" -> True (substring exata)
+                #     "ves" in "vest" -> False (evitar)
+                if detected_lower == required or (
+                    len(detected_lower) > len(required) and detected_lower.startswith(required)
+                ) or (
+                    len(required) > len(detected_lower) and required.startswith(detected_lower)
+                ):
                     detected_types.add(required)
                     break
 

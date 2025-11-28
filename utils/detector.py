@@ -74,9 +74,22 @@ class EPIDetector:
     def detect_frame(self, frame: np.ndarray) -> Tuple[List[Detection], List[Detection]]:
         """
         Detectar pessoas e EPIs em um frame.
+        Otimizado para CPU com redução de tamanho.
         Retorna: (persons, ppes)
         """
-        results = self.model.predict(frame, conf=self.conf_threshold, verbose=False)
+        # Otimização para CPU: reduzir tamanho do frame antes de processar
+        h, w = frame.shape[:2]
+        scale_factor = 0.5  # Reduzir para 50% (muito mais rápido em CPU)
+        frame_resized = cv2.resize(frame, (int(w * scale_factor), int(h * scale_factor)))
+        
+        # Usar modelo em CPU com parâmetros otimizados
+        results = self.model.predict(
+            frame_resized, 
+            conf=self.conf_threshold, 
+            verbose=False,
+            device="cpu",
+            half=False,
+        )
         r = results[0]
 
         persons = []
@@ -89,8 +102,12 @@ class EPIDetector:
         cls_ids = r.boxes.cls.cpu().numpy().astype(int)
         confs = r.boxes.conf.cpu().numpy()
 
+        # Escalas as coordenadas de volta para o tamanho original
+        scale_inv = 1.0 / scale_factor
+        
         for bbox, cls_id, conf in zip(xyxy, cls_ids, confs):
-            x1, y1, x2, y2 = map(int, bbox)
+            x1, y1, x2, y2 = bbox * scale_inv
+            x1, y1, x2, y2 = map(int, (x1, y1, x2, y2))
             centroid = ((x1 + x2) // 2, (y1 + y2) // 2)
             class_name = self.class_names.get(int(cls_id), str(cls_id))
 

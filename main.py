@@ -6,6 +6,7 @@ Detecta capacetes, luvas, óculos e outros EPIs em tempo real via webcam/vídeo.
 import cv2
 import logging
 import sys
+import time
 from pathlib import Path
 
 # Adicionar diretórios ao path
@@ -63,9 +64,19 @@ class EPIMonitoringSystem:
             logger.error(f"Erro ao abrir fonte de vídeo: {self.video_source}")
             return
 
+        # Otimizar câmera para CPU
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Buffer pequeno
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)  # Reduzir resolução
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+        cap.set(cv2.CAP_PROP_FPS, 30)
+
         logger.info("Iniciando detecção. Pressione 'Q' para sair.")
 
+        frame_times = []
+        max_history = 30  # Média dos últimos 30 frames
+
         while True:
+            start_time = time.time()
             success, frame = cap.read()
 
             if not success:
@@ -90,10 +101,30 @@ class EPIMonitoringSystem:
                 frame, person_statuses, persons, ppes
             )
 
+            # Calcular FPS
+            frame_time = time.time() - start_time
+            frame_times.append(frame_time)
+            if len(frame_times) > max_history:
+                frame_times.pop(0)
+            avg_fps = 1.0 / (sum(frame_times) / len(frame_times)) if frame_times else 0
+
+            # Adicionar FPS na imagem
+            cv2.putText(
+                annotated_frame,
+                f"FPS: {avg_fps:.1f}",
+                (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.7,
+                (0, 255, 0),
+                2,
+            )
+
             # Mostrar
             cv2.imshow("EPI Detector - Monitoramento de Equipamentos", annotated_frame)
 
-            if cv2.waitKey(1) & 0xFF == ord("q"):
+            # Pressionar 'Q' para sair (case-insensitive)
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord("q") or key == ord("Q"):
                 break
 
         # Finalizar
