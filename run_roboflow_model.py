@@ -6,6 +6,7 @@ import numpy as np
 import requests
 import json
 import sys
+import time
 from datetime import datetime
 
 
@@ -25,6 +26,12 @@ class EPIDetector:
         'helmet': 'helmet',
         'capacete-sem': 'no-helmet',
         'sem-capacete': 'no-helmet',
+        'pessoa sem capacete': 'no-helmet',
+        'pessoa_sem_capacete': 'no-helmet',
+        'person without helmet': 'no-helmet',
+        'person_without_helmet': 'no-helmet',
+        'no helmet': 'no-helmet',
+        'no_helmet': 'no-helmet',
         'oculos': 'goggles',
         'óculos': 'goggles',
         'goggles': 'goggles',
@@ -63,8 +70,8 @@ class EPIDetector:
     def predict(self, frame):
         """ Envia imagem para o Roboflow usando POST multipart/form-data """
 
-        # codificar frame para JPEG
-        _, img_encoded = cv2.imencode(".jpg", frame)
+        # codificar frame para JPEG com qualidade melhorada (PC bom pode suportar)
+        _, img_encoded = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
         img_bytes = img_encoded.tobytes()
 
         files = {
@@ -80,24 +87,29 @@ class EPIDetector:
         # Usar somente o endpoint público detect.roboflow.com para simplicidade/compatibilidade.
         # Reconstruir a URL com a confiança atual (self.confidence) para permitir ajustes dinâmicos.
         url = f"https://detect.roboflow.com/{self.model_id}?api_key={self.api_key}&confidence={self.confidence}"
+        
+        t_start = time.time()
         try:
-            resp = requests.post(url, files=files, timeout=10)
+            resp = requests.post(url, files=files, timeout=8)
         except Exception as e:
             if self.debug:
                 print(f"[ERR] Erro ao enviar imagem para detect endpoint: {e}")
-            return {"predictions": []}
+            return {"predictions": [], "time_ms": 0}
+
+        t_elapsed = (time.time() - t_start) * 1000  # converter para ms
 
         if resp.status_code != 200:
             if self.debug:
                 print(f"[DEBUG] detect endpoint HTTP {resp.status_code}: {resp.text}")
-            return {"predictions": []}
+            return {"predictions": [], "time_ms": t_elapsed}
 
         try:
             j = resp.json()
+            j["time_ms"] = t_elapsed  # adicionar tempo da requisição
         except Exception:
             if self.debug:
                 print("[DEBUG] não foi possível interpretar JSON da resposta detect")
-            return {"predictions": []}
+            return {"predictions": [], "time_ms": t_elapsed}
 
         # retornar o JSON (pode ter 'predictions':[] caso sem detecções)
         return j
@@ -164,7 +176,13 @@ class EPIDetector:
 
         return frame
 
-    def run(self, camera_id=0):
+    def run(self, camera_id=0, skip_frames=2):
+        """
+        skip_frames: enviar 1 frame a cada N capturados (reduz carga API)
+        Para PC bom: skip_frames=2 (envia metade dos frames)
+        Para PC excelente: skip_frames=1 (envia todos os frames, máxima detecção)
+        Para PC lento: aumente para 5-10
+        """
         print(f"[CAM] Abrindo camera {camera_id}...")
         cap = cv2.VideoCapture(camera_id)
 
@@ -173,7 +191,21 @@ class EPIDetector:
             sys.exit(1)
 
         print("[OK] Camera aberta!")
-        print("[INFO] Pressione Q para sair | D para diminuir | A para aumentar confiança\n")
+        print(f"[INFO] Skip: 1 frame a cada {skip_frames} | Q=sair | D=diminuir conf | A=aumentar conf")
+        print("[INFO] Para PC muito lento, aumente skip_frames no código\n")
+
+        frame_count = 0
+        last_result = {"predictions": []}
+        
+        # criar janela e maximizar
+        window_name = "Detecção de EPIs (Roboflow API Nova)"
+        cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(window_name, 1280, 960)  # janela grande
+        
+        # monitorar performance
+        fps_times = []
+        api_times = []
+        t_start_overall = time.time()
 
         while True:
             ret, frame = cap.read()
@@ -181,17 +213,51 @@ class EPIDetector:
                 print("[ERR] Falha ao capturar frame")
                 break
 
-            # Predição
-            result = self.predict(frame)
+            frame_count += 1
+            
+            # registrar tempo de captura (FPS)
+            t_frame = time.time()
+            if fps_times:
+                fps_times.append(t_frame - fps_times[-1])
+                if len(fps_times) > 30:
+                    fps_times.pop(0)
+
+            # enviar para API só a cada skip_frames frames
+            if frame_count % skip_frames == 0:
+                # redimensionar antes de enviar (melhor resolução para PC bom)
+                frame_small = cv2.resize(frame, (480, 360))  # 50% maior que antes
+                result = self.predict(frame_small)
+                
+                # registrar tempo da API
+                if "time_ms" in result:
+                    api_times.append(result["time_ms"])
+                    if len(api_times) > 30:
+                        api_times.pop(0)
+                
+                if result.get("predictions"):
+                    last_result = result
+            else:
+                result = last_result
 
             # Desenhar resultado
             frame = self.draw_detections(frame, result)
 
-            # desenhar informações de status (confiança atual)
-            status = f"conf={self.confidence:.2f}"
-            cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+            # desenhar informações de status (confiança atual, frame count)
+            status = f"conf={self.confidence:.2f} | frame {frame_count}"
+            cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
-            cv2.imshow("Detecção de EPIs (Roboflow API Nova)", frame)
+            # calcular e mostrar FPS e tempo da API
+            if fps_times:
+                avg_fps = 1.0 / (sum(fps_times) / len(fps_times)) if fps_times else 0
+                fps_text = f"FPS: {avg_fps:.1f}"
+                cv2.putText(frame, fps_text, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            if api_times:
+                avg_api = sum(api_times) / len(api_times)
+                api_text = f"API: {avg_api:.0f}ms"
+                cv2.putText(frame, api_text, (10, 80), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 200, 255), 1)
+
+            cv2.imshow(window_name, frame)
 
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -216,9 +282,12 @@ def main():
     CONFIDENCE = 0.5
 
     # ativar debug=True para ver as respostas brutas (útil para diagnosticar ausência de detections)
-    detector = EPIDetector(API_KEY, MODEL_ID, CONFIDENCE, debug=True)
+    detector = EPIDetector(API_KEY, MODEL_ID, CONFIDENCE, debug=False)  # False para menos verbosidade
 
-    detector.run()
+    # skip_frames: aumentado para 4 (API lenta = enviar menos frames)
+    # Com API 1500ms: skip_frames=4 = ~1 requisição a cada 4 frames (~20 req/seg max)
+    # Se ficar lento, aumente para 5-6
+    detector.run(skip_frames=4)
 
 
 if __name__ == "__main__":
