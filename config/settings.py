@@ -20,30 +20,39 @@ VIDEO_SOURCE = 0
 # Confiança mínima para detecções
 CONF_THRESHOLD = 0.3  # Reduzido para 0.3 (mais sensível)
 
-# Definir EPIs obrigatórios por setor/cargo (usando classes COCO)
-# NOTA: Modelo COCO atual NÃO detecta EPIs específicos (helmet, gloves, etc)
-# Para fase de TESTES: apenas detectar pessoas. Preparado para EPIs customizados depois.
+# Definir EPIs obrigatórios por setor/cargo (usando classes customizadas)
+# Com modelo customizado: ["helmet", "goggles", "gloves"]
+# Com modelo COCO: [] (genérico - sem EPIs específicos)
 REQUIRED_PPE_BY_SECTOR = {
-    "default": ["person"],  # Apenas detectar pessoas por enquanto
-    "construção": ["person"],  # TODO: Retreinar com dataset de EPIs
-    "química": ["person"],
-    "limpeza": ["person"],
+    "default": ["helmet", "goggles"],  # Customizado: capacete e óculos obrigatórios
+    "construção": ["helmet", "goggles", "gloves"],
+    "química": ["helmet", "goggles", "gloves"],
+    "escritório": ["goggles"],
+    "limpeza": ["gloves", "goggles"],
 }
 
 # PPE padrão (usado se nenhum setor for especificado)
-# COCO classes disponíveis para detecção: backpack, handbag, tie, suitcase, etc
-# Se vazio, apenas detecta pessoas
-DEFAULT_REQUIRED_PPE = []  # Vazio por enquanto - apenas detecta pessoas
+# Altere para [] se quiser apenas detectar pessoas
+DEFAULT_REQUIRED_PPE = ["helmet", "goggles"]  # Capacete e óculos obrigatórios
 
-# Mapeamento de classes do modelo COCO para tipos de EPI
-# Usando modelo COCO padrão: adaptar classes existentes para EPIs
+# Mapeamento de classes do modelo para tipos de EPI (português)
+# Atualizado para modelo customizado com helmet, goggles, gloves
 EPI_CLASS_MAPPING = {
     "person": "pessoa",
-    "backpack": "mochila/equipamento",
+    "helmet": "capacete",
+    "hard_hat": "capacete",
+    "hardhat": "capacete",
+    "goggles": "óculos",
+    "glasses": "óculos",
+    "safety_glasses": "óculos",
+    "gloves": "luvas",
+    "glove": "luvas",
+    "vest": "colete",
+    "safety_vest": "colete",
+    # Classes COCO alternativas (fallback)
+    "backpack": "mochila",
     "handbag": "bolsa",
     "tie": "uniforme",
-    "baseball_glove": "luvas",
-    # TODO: Adicione mapeamentos de EPIs customizados quando modelo for retreinado
 }
 
 # Limiar de overlap para associação EPI↔pessoa (0.0-1.0)
