@@ -1,319 +1,224 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""
-Script profissional para rodar modelo YOLOv11 do Roboflow com Webcam
-- Detecção de EPIs em tempo real
-- Otimizado para CPU
-- Cores: VERMELHO (perigo), VERDE (segurança)
-- Usa API REST do Roboflow (compatível com Python 3.13)
-"""
 
 import cv2
 import numpy as np
+import requests
 import json
-import urllib.request
-import urllib.error
-from pathlib import Path
 import sys
 from datetime import datetime
 
 
 class EPIDetector:
-    """Detector de EPIs com Roboflow API REST + Webcam"""
-    
-    # Classes que indicam PERIGO (vermelho)
+    """Detector de EPIs via API nova do Roboflow"""
+
     DANGER_CLASSES = {'no-helmet', 'no-glove', 'no-vest', 'no-goggles'}
-    
-    # Classes que indicam SEGURANÇA (verde)
     SAFETY_CLASSES = {'helmet', 'glove', 'vest', 'goggles'}
-    
-    # Cores em BGR (OpenCV usa BGR, não RGB)
-    COLOR_RED = (0, 0, 255)      # Perigo
-    COLOR_GREEN = (0, 255, 0)    # Segurança
-    COLOR_YELLOW = (0, 255, 255) # Neutro
-    
-    def __init__(self, api_key: str, model_id: str, confidence: float = 0.5):
-        """
-        Inicializar detector
-        
-        Args:
-            api_key: Sua chave API Roboflow
-            model_id: ID do seu modelo (ex: "safety-equipment-detection/1")
-            confidence: Threshold de confiança (0-1)
-        """
+
+    COLOR_RED = (0, 0, 255)
+    COLOR_GREEN = (0, 255, 0)
+    COLOR_YELLOW = (0, 255, 255)
+
+    # mapagem simples para rótulos em pt/en e "no-*"
+    EPI_ALIASES = {
+        'capacete': 'helmet',
+        'helmet': 'helmet',
+        'capacete-sem': 'no-helmet',
+        'sem-capacete': 'no-helmet',
+        'oculos': 'goggles',
+        'óculos': 'goggles',
+        'goggles': 'goggles',
+        'sem-oculos': 'no-goggles',
+        'no-oculos': 'no-goggles',
+        'colete': 'vest',
+        'vest': 'vest',
+        'sem-colete': 'no-vest',
+        'no-colete': 'no-vest',
+        'luva': 'glove',
+        'luvas': 'glove',
+        'glove': 'glove',
+        'sem-luva': 'no-glove',
+        'no-luva': 'no-glove'
+    }
+
+    def __init__(self, api_key: str, model_id: str, confidence: float = 0.5, debug: bool = False):
         self.api_key = api_key
         self.model_id = model_id
         self.confidence = confidence
-        
-        # URL base do Roboflow
-        self.api_url = f"https://detect.roboflow.com/{model_id}"
-        
+        self.debug = debug
+
+        # endpoint "nova" (API) e endpoint público de detecção (detect)
+        self.api_url = f"https://api.roboflow.com/models/{model_id}/infer"
+        # endpoint de detecção público — costuma aceitar files multipart e query string api_key
+        self.detect_url = f"https://detect.roboflow.com/{model_id}?api_key={api_key}&confidence={confidence}"
+
         print(f"[OK] Detector configurado")
-        print(f"  Model: {model_id}")
-        print(f"  API: {self.api_url}")
+        print(f"Model: {model_id}")
+        print(f"Endpoint API: {self.api_url}")
+        print(f"Endpoint Detect: {self.detect_url}")
+        if self.debug:
+            print("[DEBUG] modo debug ativado")
         print()
-    
-    def predict(self, frame_bytes: bytes) -> dict:
-        """
-        Fazer predição via API REST do Roboflow
-        
-        Args:
-            frame_bytes: Imagem em bytes (JPEG)
-            
-        Returns:
-            dict com predições
-        """
+
+    def predict(self, frame):
+        """ Envia imagem para o Roboflow usando POST multipart/form-data """
+
+        # codificar frame para JPEG
+        _, img_encoded = cv2.imencode(".jpg", frame)
+        img_bytes = img_encoded.tobytes()
+
+        files = {
+            "file": ("frame.jpg", img_bytes, "image/jpeg")
+        }
+
+        data = {
+            "api_key": self.api_key,
+            "confidence": self.confidence,
+            "overlap": 0.5
+        }
+
+        # Usar somente o endpoint público detect.roboflow.com para simplicidade/compatibilidade.
+        # Reconstruir a URL com a confiança atual (self.confidence) para permitir ajustes dinâmicos.
+        url = f"https://detect.roboflow.com/{self.model_id}?api_key={self.api_key}&confidence={self.confidence}"
         try:
-            # Preparar requisição
-            url = f"{self.api_url}?api_key={self.api_key}&confidence={self.confidence}"
-            
-            # Enviar imagem
-            req = urllib.request.Request(url, data=frame_bytes, method='POST')
-            req.add_header('Content-Type', 'application/octet-stream')
-            
-            # Fazer requisição com timeout
-            with urllib.request.urlopen(req, timeout=10) as response:
-                result = json.loads(response.read().decode())
-                return result
-                
-        except urllib.error.HTTPError as e:
-            print(f"[ERR] Erro HTTP {e.code}: ", end="")
-            if e.code == 401:
-                print("Chave API invalida!")
-            elif e.code == 404:
-                print("Model ID nao encontrado!")
-            else:
-                print(e.reason)
-            return {"predictions": []}
-        except urllib.error.URLError as e:
-            print(f"[ERR] Erro de conexao: {e.reason}")
-            return {"predictions": []}
+            resp = requests.post(url, files=files, timeout=10)
         except Exception as e:
-            print(f"[ERR] Erro: {e}")
+            if self.debug:
+                print(f"[ERR] Erro ao enviar imagem para detect endpoint: {e}")
             return {"predictions": []}
-        
-    def get_color_for_class(self, class_name: str) -> tuple:
-        """Retornar cor baseada na classe"""
-        class_lower = class_name.lower().strip()
-        
-        if class_lower in self.DANGER_CLASSES:
+
+        if resp.status_code != 200:
+            if self.debug:
+                print(f"[DEBUG] detect endpoint HTTP {resp.status_code}: {resp.text}")
+            return {"predictions": []}
+
+        try:
+            j = resp.json()
+        except Exception:
+            if self.debug:
+                print("[DEBUG] não foi possível interpretar JSON da resposta detect")
+            return {"predictions": []}
+
+        # retornar o JSON (pode ter 'predictions':[] caso sem detecções)
+        return j
+
+    def get_color_for_class(self, class_name: str):
+        norm = self.normalize_class_name(class_name)
+        if norm in self.DANGER_CLASSES:
             return self.COLOR_RED
-        elif class_lower in self.SAFETY_CLASSES:
+        elif norm in self.SAFETY_CLASSES:
             return self.COLOR_GREEN
         else:
             return self.COLOR_YELLOW
-    
-    def draw_detections(self, frame: np.ndarray, results: dict) -> np.ndarray:
-        """Desenhar detecções no frame com cores apropriadas"""
-        
-        frame_h, frame_w = frame.shape[:2]
-        
-        if 'predictions' not in results or not results['predictions']:
+
+    def normalize_class_name(self, raw: str):
+        if not raw:
+            return raw
+        key = raw.lower().strip()
+        # remover prefixos como "no-" ou "sem-" e mapear
+        if key.startswith('no-') or key.startswith('sem-'):
+            # tentar mapear direto
+            mapped = self.EPI_ALIASES.get(key)
+            if mapped:
+                return mapped
+        # mapear alias simples
+        return self.EPI_ALIASES.get(key, key)
+
+    def draw_detections(self, frame, result):
+        if "predictions" not in result:
             return frame
-        
-        # Contar classes para estatísticas
-        class_counts = {}
-        danger_count = 0
-        
-        for pred in results['predictions']:
-            # Extrair coordenadas
-            x = pred.get('x', 0)
-            y = pred.get('y', 0)
-            width = pred.get('width', 0)
-            height = pred.get('height', 0)
-            confidence = pred.get('confidence', 0)
-            class_name = pred.get('class', 'unknown')
-            
-            # Converter para coordenadas de caixa
-            x1 = int(x - width / 2)
-            y1 = int(y - height / 2)
-            x2 = int(x + width / 2)
-            y2 = int(y + height / 2)
-            
-            # Garantir que está dentro do frame
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(frame_w, x2)
-            y2 = min(frame_h, y2)
-            
-            # Obter cor
+
+        for pred in result["predictions"]:
+            # Roboflow pode devolver x,y como centro + width/height
+            try:
+                cx = float(pred.get('x', 0))
+                cy = float(pred.get('y', 0))
+                w = float(pred.get('width', 0))
+                h = float(pred.get('height', 0))
+            except Exception:
+                continue
+
+            x1 = int(cx - w / 2)
+            y1 = int(cy - h / 2)
+            x2 = int(x1 + w)
+            y2 = int(y1 + h)
+
+            # limitar aos limites da imagem
+            h_img, w_img = frame.shape[:2]
+            x1 = max(0, min(x1, w_img - 1))
+            x2 = max(0, min(x2, w_img - 1))
+            y1 = max(0, min(y1, h_img - 1))
+            y2 = max(0, min(y2, h_img - 1))
+
+            class_name = pred.get('class', '')
+            conf = float(pred.get('confidence', 0.0))
+
             color = self.get_color_for_class(class_name)
-            
-            # Desenhar caixa
-            thickness = 2
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, thickness)
-            
-            # Desenhar rótulo
-            label = f"{class_name}: {confidence:.2f}"
-            label_size, _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)
-            
-            # Fundo do texto
-            cv2.rectangle(
-                frame,
-                (x1, y1 - label_size[1] - 8),
-                (x1 + label_size[0] + 4, y1),
-                color,
-                -1
-            )
-            
-            # Texto
-            cv2.putText(
-                frame,
-                label,
-                (x1 + 2, y1 - 4),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.6,
-                (255, 255, 255),
-                1
-            )
-            
-            # Contabilizar
-            class_counts[class_name] = class_counts.get(class_name, 0) + 1
-            if class_name.lower() in self.DANGER_CLASSES:
-                danger_count += 1
-        
-        # Desenhar estatísticas
-        self._draw_stats(frame, class_counts, danger_count)
-        
+
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+
+            # usar nome normalizado no rótulo para consistência
+            label_class = self.normalize_class_name(class_name)
+            label = f"{label_class} {conf:.2f}"
+            cv2.putText(frame, label, (x1, y1 - 5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+
         return frame
-    
-    def run(self, camera_id: int = 0, skip_frames: int = 2):
-        """
-        Rodar detecção com webcam
-        
-        Args:
-            camera_id: ID da câmera (0 = padrão)
-            skip_frames: Pular N frames entre detecções (para otimização em CPU)
-        """
-        
+
+    def run(self, camera_id=0):
         print(f"[CAM] Abrindo camera {camera_id}...")
         cap = cv2.VideoCapture(camera_id)
-        
+
         if not cap.isOpened():
-            print(f"[ERR] Erro: Camera {camera_id} nao encontrada")
+            print("[ERR] ERRO: Não foi possível abrir a câmera!")
             sys.exit(1)
-        
-        # Configurar câmera
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-        cap.set(cv2.CAP_PROP_FPS, 30)
-        
+
         print("[OK] Camera aberta!")
-        print("[INF] Pressione 'Q' para sair, 'S' para salvar frame")
-        print()
-        
-        frame_count = 0
-        
-        try:
-            while True:
-                ret, frame = cap.read()
-                if not ret:
-                    print("❌ Erro ao ler frame")
-                    break
-                
-                frame_count += 1
-                
-                # Pular frames para otimizar CPU
-                if frame_count % skip_frames != 0:
-                    cv2.imshow("Deteccao de EPIs - YOLOv11 (Roboflow)", frame)
-                    key = cv2.waitKey(1) & 0xFF
-                    if key == ord('q') or key == ord('Q'):
-                        print("\n👋 Encerrando...")
-                        break
-                    continue
-                
-                print(f"[FRAME] {frame_count}... ", end="", flush=True)
-                
-                # Codificar frame como JPEG
-                success, buffer = cv2.imencode('.jpg', frame)
-                if not success:
-                    print("[ERR] Erro ao codificar")
-                    continue
-                
-                frame_bytes = buffer.tobytes()
-                
-                # Fazer predicao via API
-                results = self.predict(frame_bytes)
-                print("[OK]", flush=True)
-                
-                # Desenhar detecções
-                frame = self.draw_detections(frame, results)
-                
-                # Mostrar frame
-                cv2.imshow("Deteccao de EPIs - YOLOv11 (Roboflow)", frame)
-                
-                # Controles
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q') or key == ord('Q'):
-                    print("\n[EXIT] Encerrando...")
-                    break
-                elif key == ord('s') or key == ord('S'):
-                    filename = f"deteccao_{frame_count}.jpg"
-                    cv2.imwrite(filename, frame)
-                    print(f"\n[SAVE] Frame salvo: {filename}")
-        
-        except KeyboardInterrupt:
-            print("\n\n[INT] Interrompido pelo usuario")
-        
-        finally:
-            print("[CLEAN] Limpando recursos...")
-            cap.release()
-            cv2.destroyAllWindows()
-            print("[DONE] Pronto!")
+        print("[INFO] Pressione Q para sair | D para diminuir | A para aumentar confiança\n")
+
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                print("[ERR] Falha ao capturar frame")
+                break
+
+            # Predição
+            result = self.predict(frame)
+
+            # Desenhar resultado
+            frame = self.draw_detections(frame, result)
+
+            # desenhar informações de status (confiança atual)
+            status = f"conf={self.confidence:.2f}"
+            cv2.putText(frame, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 2)
+
+            cv2.imshow("Detecção de EPIs (Roboflow API Nova)", frame)
+
+            key = cv2.waitKey(1) & 0xFF
+            if key == ord('q'):
+                break
+            # diminuir confiança com D
+            if key == ord('d'):
+                self.confidence = max(0.01, round(self.confidence - 0.05, 2))
+                print(f"[INFO] confiança ajustada: {self.confidence}")
+            # aumentar confiança com A
+            if key == ord('a'):
+                self.confidence = min(0.99, round(self.confidence + 0.05, 2))
+                print(f"[INFO] confiança ajustada: {self.confidence}")
+
+        cap.release()
+        cv2.destroyAllWindows()
 
 
 def main():
-    """Função principal"""
-    
-    print("="*70)
-    print("[*] DETECTOR DE EPIs COM YOLOV11 (Roboflow - API REST)")
-    print("="*70)
-    print()
-    
-    # ⚙️ CONFIGURAR AQUI
-    API_KEY = "seu_api_key_aqui"          # ← SUBSTITUIR
-    MODEL_ID = "seu_model_id_aqui/1"      # ← SUBSTITUIR (ex: "safety-equipment-detection/1")
-    CONFIDENCE = 0.5                       # Threshold (0-1)
-    SKIP_FRAMES = 2                        # Pular frames para otimizar
-    
-    # Validar configuração
-    if "seu_api_key_aqui" in API_KEY:
-        print("[ERR] ERRO: Configure sua API_KEY do Roboflow!")
-        print()
-        print("Como conseguir:")
-        print("1. Ir para: https://app.roboflow.com/settings/account")
-        print("2. Copiar 'Private API Key'")
-        print("3. Substituir em API_KEY = '...'")
-        print()
-        sys.exit(1)
-    
-    if "seu_model_id_aqui" in MODEL_ID:
-        print("[ERR] ERRO: Configure seu MODEL_ID do Roboflow!")
-        print()
-        print("Como conseguir:")
-        print("1. Ir para: https://app.roboflow.com/projects")
-        print("2. Selecionar seu projeto")
-        print("3. Ver 'Model Deployment' -> 'API Reference'")
-        print("4. Copiar format: 'projeto-xyz/1'")
-        print()
-        sys.exit(1)
-    
-    print(f"[CONFIG] Configuracao:")
-    print(f"   API Key: {API_KEY[:10]}...")
-    print(f"   Model ID: {MODEL_ID}")
-    print(f"   Confianca: {CONFIDENCE}")
-    print(f"   Skip Frames: {SKIP_FRAMES}")
-    print()
-    
-    # Criar detector
-    detector = EPIDetector(
-        api_key=API_KEY,
-        model_id=MODEL_ID,
-        confidence=CONFIDENCE
-    )
-    
-    # Rodar
-    detector.run(skip_frames=SKIP_FRAMES)
+
+    API_KEY = "4cRmXBXKWBpD8jW2NOxr"
+    MODEL_ID = "confi_safe-xoeio/1"  # exemplo: project/1
+    CONFIDENCE = 0.5
+
+    # ativar debug=True para ver as respostas brutas (útil para diagnosticar ausência de detections)
+    detector = EPIDetector(API_KEY, MODEL_ID, CONFIDENCE, debug=True)
+
+    detector.run()
 
 
 if __name__ == "__main__":
